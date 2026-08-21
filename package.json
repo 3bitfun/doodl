@@ -9,13 +9,14 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
     "vite": "^8.2.2"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.3",
-    "autoprefixer": "^10.5.4",
-    "postcss": "^8.5.26",
-    "tailwindcss": "^3.4.19"
+    "@supabase/supabase-js": "^2.112.3"
   },
   "description": "A real-time multiplayer drawing and guessing game built with Vite, vanilla JavaScript, Tailwind CSS, and Supabase Realtime Broadcast.",
   "main": "postcss.config.js",

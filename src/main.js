@@ -3,16 +3,17 @@ import { createClient } from '@supabase/supabase-js'
 import GameRoom from './GameRoom.js'
 import Lobby from './Lobby.js'
 
-// Supabase configuration - Replace with your own credentials
+// Supabase configuration
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Initialize Supabase client
 let supabase = null
-try {
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
   supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-} catch (e) {
-  console.warn('Supabase not configured yet. Please add your credentials in main.js')
+  console.log('✅ Supabase client initialized')
+} else {
+  console.warn('⚠️ Supabase credentials not found. Please check your .env file')
 }
 
 // Simple hash router
