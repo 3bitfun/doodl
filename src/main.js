@@ -4,8 +4,8 @@ import GameRoom from './GameRoom.js'
 import Lobby from './Lobby.js'
 
 // Supabase configuration - Replace with your own credentials
-const SUPABASE_URL = 'YOUR_SUPABASE_URL'
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Initialize Supabase client
 let supabase = null
