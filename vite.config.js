@@ -1,11 +1,10 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  // Ensures relative paths work correctly when deployed to GitHub Pages
-  base: '/',
+  // Set the base path to your subfolder path on GitHub Pages
+  base: '/doodl/',
   
   build: {
-    // Outputs the build files to the dist folder expected by GitHub Pages
     outDir: 'dist',
   },
   
