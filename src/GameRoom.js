@@ -48,7 +48,7 @@ export default class GameRoom {
     })
     this.lobbyChannel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
-        this.lobbyChannel.track({ host: username, roomCode })
+        this.lobbyChannel.track({ host: username, roomCode, isHost: this.state.isHost })
       }
     })
 
@@ -60,7 +60,12 @@ export default class GameRoom {
     this.state.channel
       .on('broadcast', { event: 'drawing' }, (payload) => this.handleDrawingEvent(payload.payload))
       .on('presence', { event: 'sync' }, () => this.syncPlayersFromPresence())
-      .on('presence', { event: 'join' }, () => this.syncPlayersFromPresence())
+      .on('presence', { event: 'join' }, () => {
+        this.syncPlayersFromPresence()
+        if (this.isRoomLeader() && this.currentWord) {
+          setTimeout(() => this.broadcast('new-word', { drawerId: this.drawerId, word: this.currentWord }), 250)
+        }
+      })
       .on('presence', { event: 'leave' }, () => this.syncPlayersFromPresence())
       .on('broadcast', { event: 'chat' }, (payload) => this.handleChatMessage(payload.payload))
       .on('broadcast', { event: 'new-word' }, (payload) => this.handleNewWord(payload.payload))
@@ -69,10 +74,14 @@ export default class GameRoom {
       .on('broadcast', { event: 'clear-canvas' }, () => this.clearCanvas())
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          await this.state.channel.track({ playerId, username, score: 0 })
-          setTimeout(() => this.startRound(), 1000)
+          await this.state.channel.track({ playerId, username, score: 0, isHost: this.state.isHost })
         }
       })
+  }
+
+  isRoomLeader() {
+    const playerIds = Object.keys(this.state.players).sort()
+    return playerIds[0] === this.getPlayerId()
   }
 
   syncPlayersFromPresence() {
@@ -81,7 +90,7 @@ export default class GameRoom {
     const presence = this.state.channel.presenceState()
     this.state.players = Object.fromEntries(Object.entries(presence).map(([playerId, entries]) => {
       const player = entries[entries.length - 1] || {}
-      return [playerId, { username: player.username || 'Unknown', score: player.score || 0 }]
+      return [playerId, { username: player.username || 'Unknown', score: player.score || 0, isHost: player.isHost === true }]
     }))
     this.updatePlayersList()
   }
@@ -154,6 +163,7 @@ export default class GameRoom {
   }
 
   handleNewWord(data) {
+    if (data.senderId === this.getPlayerId()) return
     this.drawerId = data.drawerId
     this.currentWord = data.word
     
@@ -174,6 +184,7 @@ export default class GameRoom {
   }
 
   handleCorrectGuess(data) {
+    if (data.senderId === this.getPlayerId()) return
     this.state.guessedWords.add(data.word.toLowerCase())
     this.addSystemMessage(`🎯 ${data.guesser} guessed "${data.word}"! (+${data.points} points)`)
     this.state.scores = data.scores
@@ -195,15 +206,16 @@ export default class GameRoom {
       this.endGame(data.scores)
     } else {
       this.addSystemMessage(`📦 Round ${data.round - 1} complete! Starting round ${data.round}...`)
-      setTimeout(() => this.startRound(), 3000)
+      if (this.state.isHost) setTimeout(() => this.startRound(), 3000)
     }
   }
 
   render() {
-    this.app.innerHTML = `<div class="min-h-screen flex flex-col"><header class="glass border-b border-gray-700/50 px-6 py-3 backdrop-blur-sm"><div class="flex items-center justify-between"><div class="flex items-center gap-4"><h1 class="text-2xl font-bold gradient-text">doodl</h1><span class="text-gray-500">|</span><span class="text-gray-300">Room: <span class="font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded-lg">${this.state.roomCode}</span></span><span class="text-gray-500">|</span><span class="text-gray-300">You: <span class="font-semibold text-pink-400">${this.state.username}</span></span></div><button id="leaveRoom" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200 hover:shadow-lg hover:shadow-red-500/25">🚪 Leave</button></div></header><div class="flex-1 flex overflow-hidden"><div class="w-64 glass border-r border-gray-700/50 p-4 flex flex-col backdrop-blur-sm"><div class="mb-4"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">👥 Players</h3><div id="playersList" class="space-y-2"></div></div><div class="mt-auto"><div id="wordDisplay" class="glass rounded-xl p-4 text-center border border-gray-700/50"><p class="text-gray-500 text-sm">Waiting for round...</p></div><div id="timerDisplay" class="mt-3 text-center text-4xl font-bold gradient-text animate-pulse"></div></div></div><div class="flex-1 bg-gray-900/50 flex flex-col items-center justify-center p-4"><div class="glass rounded-2xl shadow-2xl overflow-hidden border border-gray-700/50"><canvas id="gameCanvas" width="800" height="600" class="bg-white cursor-crosshair"></canvas></div><div class="mt-4 flex items-center gap-4 glass rounded-xl px-4 py-3 border border-gray-700/50"><div class="flex items-center gap-2"><label class="text-sm text-gray-400">🎨</label><input type="color" id="colorPicker" value="#000000" class="w-10 h-10 rounded-xl border-0 cursor-pointer"/></div><div class="flex items-center gap-2"><label class="text-sm text-gray-400">Size:</label><input type="range" id="brushSize" min="1" max="50" value="5" class="w-32 accent-purple-500"/><span id="brushSizeValue" class="text-sm text-gray-300 w-8 text-center">5</span></div><button id="eraserBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm transition-all duration-200">🧹 Eraser</button><button id="clearBtn" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200">🗑️ Clear</button></div></div><div class="w-80 glass border-l border-gray-700/50 flex flex-col backdrop-blur-sm"><div class="p-4 border-b border-gray-700/50"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">💬 Chat</h3></div><div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-2"></div><div class="p-4 border-t border-gray-700/50"><form id="chatForm" class="flex gap-2"><input type="text" id="chatInput" placeholder="Type your guess..." class="flex-1 px-3 py-2 bg-gray-800/80 border border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-white text-sm placeholder-gray-500" maxlength="50"/><button type="submit" class="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-xl transition-all duration-200">➤</button></form></div></div></div></div>`
+    this.app.innerHTML = `<div class="min-h-screen flex flex-col"><header class="glass border-b border-gray-700/50 px-6 py-3 backdrop-blur-sm"><div class="flex items-center justify-between"><div class="flex items-center gap-4"><h1 class="text-2xl font-bold gradient-text">doodl</h1><span class="text-gray-500">|</span><span class="text-gray-300">Room: <span class="font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded-lg">${this.state.roomCode}</span></span><span class="text-gray-500">|</span><span class="text-gray-300">You: <span class="font-semibold text-pink-400">${this.state.username}</span></span></div><div class="flex items-center gap-2"><button id="startGame" class="hidden px-4 py-2 bg-green-600/80 hover:bg-green-700 rounded-xl text-sm transition-all duration-200">▶ Start Game</button><button id="leaveRoom" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200 hover:shadow-lg hover:shadow-red-500/25">🚪 Leave</button></div></div></header><div class="flex-1 flex overflow-hidden"><div class="w-64 glass border-r border-gray-700/50 p-4 flex flex-col backdrop-blur-sm"><div class="mb-4"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">👥 Players</h3><div id="playersList" class="space-y-2"></div></div><div class="mt-auto"><div id="wordDisplay" class="glass rounded-xl p-4 text-center border border-gray-700/50"><p class="text-gray-500 text-sm">Waiting for round...</p></div><div id="timerDisplay" class="mt-3 text-center text-4xl font-bold gradient-text animate-pulse"></div></div></div><div class="flex-1 bg-gray-900/50 flex flex-col items-center justify-center p-4"><div class="glass rounded-2xl shadow-2xl overflow-hidden border border-gray-700/50"><canvas id="gameCanvas" width="800" height="600" class="bg-white cursor-crosshair"></canvas></div><div class="mt-4 flex items-center gap-4 glass rounded-xl px-4 py-3 border border-gray-700/50"><div class="flex items-center gap-2"><label class="text-sm text-gray-400">🎨</label><input type="color" id="colorPicker" value="#000000" class="w-10 h-10 rounded-xl border-0 cursor-pointer"/></div><div class="flex items-center gap-2"><label class="text-sm text-gray-400">Size:</label><input type="range" id="brushSize" min="1" max="50" value="5" class="w-32 accent-purple-500"/><span id="brushSizeValue" class="text-sm text-gray-300 w-8 text-center">5</span></div><button id="eraserBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm transition-all duration-200">🧹 Eraser</button><button id="clearBtn" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200">🗑️ Clear</button></div></div><div class="w-80 glass border-l border-gray-700/50 flex flex-col backdrop-blur-sm"><div class="p-4 border-b border-gray-700/50"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">💬 Chat</h3></div><div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-2"></div><div class="p-4 border-t border-gray-700/50"><form id="chatForm" class="flex gap-2"><input type="text" id="chatInput" placeholder="Type your guess..." class="flex-1 px-3 py-2 bg-gray-800/80 border border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-white text-sm placeholder-gray-500" maxlength="50"/><button type="submit" class="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-xl transition-all duration-200">➤</button></form></div></div></div></div>`
     this.setupCanvas()
     this.setupEventListeners()
     this.updatePlayersList()
+    this.updateStartButton()
   }
 
   setupCanvas() {
@@ -252,7 +264,14 @@ export default class GameRoom {
     document.getElementById("eraserBtn").addEventListener("click", () => { this.state.isEraser = !this.state.isEraser; document.getElementById("eraserBtn").classList.toggle("bg-purple-600", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-2", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-purple-500", this.state.isEraser) })
     document.getElementById("clearBtn").addEventListener("click", () => { if (this.state.isDrawer) { this.clearCanvas(); this.broadcast("clear-canvas", {}) } })
     document.getElementById("chatForm").addEventListener("submit", (e) => { e.preventDefault(); const input = document.getElementById("chatInput"); const msg = input.value.trim(); if (msg) { this.sendChat(msg); input.value = "" } })
+    document.getElementById("startGame").addEventListener("click", () => this.startRound())
     document.getElementById("leaveRoom").addEventListener("click", () => this.leaveRoom())
+  }
+
+  updateStartButton() {
+    const button = document.getElementById("startGame")
+    if (!button) return
+    button.classList.toggle("hidden", !this.state.isHost)
   }
 
   getMousePos(e) { const r = this.canvas.getBoundingClientRect(); const scaleX = this.canvas.width / r.width; const scaleY = this.canvas.height / r.height; return { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY } }
@@ -287,12 +306,17 @@ export default class GameRoom {
   clearCanvas() { this.strokes = []; this.ctx.fillStyle = "#ffffff"; this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height) }
 
   sendChat(message) {
-    const isCorrect = !this.state.isDrawer && this.state.currentWord && message.toLowerCase() === this.state.currentWord.toLowerCase() && !this.state.guessedWords.has(message.toLowerCase())
+    const isCorrect = !this.state.isDrawer && this.currentWord && message.toLowerCase() === this.currentWord.toLowerCase() && !this.state.guessedWords.has(message.toLowerCase())
     if (isCorrect) {
       const pts = Math.max(10, Math.floor(30 - (Date.now() - this.roundStartTime) / 1000))
       this.state.scores[this.getPlayerId()] = (this.state.scores[this.getPlayerId()] || 0) + pts
+      if (this.state.players[this.getPlayerId()]) this.state.players[this.getPlayerId()].score = this.state.scores[this.getPlayerId()]
       this.broadcast("chat", { message, username: this.state.username })
-      this.broadcast("correct-guess", { word: this.state.currentWord, guesser: this.state.username, points: pts, scores: this.state.scores })
+      const guessResult = { senderId: this.getPlayerId(), word: this.currentWord, guesser: this.state.username, points: pts, scores: this.state.scores }
+      this.state.guessedWords.add(this.currentWord.toLowerCase())
+      this.addSystemMessage(`🎯 ${this.state.username} guessed \"${this.currentWord}\"! (+${pts} points)`)
+      this.updatePlayersList()
+      this.broadcast("correct-guess", guessResult)
       this.checkAllGuessed()
     } else { this.broadcast("chat", { message, username: this.state.username }) }
     this.state.chatMessages.push({ username: this.state.username, message, isSystem: false }); this.updateChat()
@@ -306,6 +330,8 @@ export default class GameRoom {
     if (ids.length === 0) return
     const drawer = ids[Math.floor(Math.random() * ids.length)]
     const word = this.state.wordList[Math.floor(Math.random() * this.state.wordList.length)]
+    const roundData = { drawerId: drawer, word }
+    this.handleNewWord(roundData)
     this.broadcast("new-word", { drawerId: drawer, word })
     this.roundStartTime = Date.now()
     let t = 60; const el = document.getElementById("timerDisplay")
@@ -341,7 +367,7 @@ export default class GameRoom {
   updatePlayersList() {
     const el = document.getElementById("playersList"); if (!el) return
     const currentPlayerId = this.getPlayerId()
-    el.innerHTML = Object.entries(this.state.players).map(([id, p]) => `<div class="flex items-center justify-between glass rounded-xl px-3 py-2 border ${id === currentPlayerId ? "border-purple-500/50 bg-purple-500/10" : "border-gray-700/50"}"><span class="text-gray-300 text-sm truncate flex-1">${p.username}${id === currentPlayerId ? ' <span class="text-xs text-purple-400">(You)</span>' : ""}</span><span class="text-purple-400 font-semibold text-sm ml-2">${p.score || 0}</span></div>`).join("")
+    el.innerHTML = Object.entries(this.state.players).map(([id, p]) => `<div class="flex items-center justify-between glass rounded-xl px-3 py-2 border ${id === currentPlayerId ? "border-purple-500/50 bg-purple-500/10" : "border-gray-700/50"}"><span class="text-gray-300 text-sm truncate flex-1">${p.username}${p.isHost ? ' <span class="text-xs text-pink-400">(Host)</span>' : ""}${id === currentPlayerId ? ' <span class="text-xs text-purple-400">(You)</span>' : ""}</span><span class="text-purple-400 font-semibold text-sm ml-2">${p.score || 0}</span></div>`).join("")
   }
 
   updateScores(scores) { this.state.scores = scores; this.updatePlayersList() }
@@ -357,6 +383,7 @@ export default class GameRoom {
     if (this.state.channel) { this.state.channel.untrack(); this.state.channel.unsubscribe() }
     if (this.lobbyChannel) this.lobbyChannel.unsubscribe()
     if (this.gameTimer) clearInterval(this.gameTimer)
+    localStorage.removeItem('doodl_room_code')
     this.router.navigate("/")
   }
 

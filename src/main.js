@@ -22,7 +22,6 @@ class Router {
     this.routes = {}
     this.currentRoute = null
     window.addEventListener('hashchange', () => this.handleRoute())
-    this.handleRoute()
   }
 
   addRoute(path, handler) {
@@ -48,8 +47,9 @@ class Router {
 
 // App state
 const state = {
-  username: '',
-  roomCode: '',
+  username: localStorage.getItem('doodl_username') || '',
+  roomCode: localStorage.getItem('doodl_room_code') || '',
+  isHost: localStorage.getItem('doodl_host_room') === localStorage.getItem('doodl_room_code'),
   supabase: supabase,
   channel: null,
   players: {},
@@ -99,5 +99,7 @@ router.addRoute('/room', () => {
 if (!window.location.hash) {
   window.location.hash = '/'
 }
+
+router.handleRoute()
 
 export { state, supabase }

@@ -111,7 +111,7 @@ export default class Lobby {
   getRoomsFromPresence() {
     const presence = this.lobbyChannel.presenceState()
     return Object.fromEntries(Object.entries(presence).map(([roomCode, entries]) => {
-      const room = entries[entries.length - 1] || {}
+      const room = entries.find((entry) => entry.isHost) || entries[0] || {}
       return [roomCode, {
         host: room.host || 'Anonymous',
         players: entries.length
@@ -171,9 +171,12 @@ export default class Lobby {
       const roomCode = generateRoomCode()
       this.state.username = username
       this.state.roomCode = roomCode
+      this.state.isHost = true
       
       // Store in localStorage for persistence
       localStorage.setItem('doodl_username', username)
+      localStorage.setItem('doodl_room_code', roomCode)
+      localStorage.setItem('doodl_host_room', roomCode)
       
       this.router.navigate('/room')
     })
@@ -196,8 +199,11 @@ export default class Lobby {
 
       this.state.username = username
       this.state.roomCode = roomCode
+      this.state.isHost = false
       
       localStorage.setItem('doodl_username', username)
+      localStorage.setItem('doodl_room_code', roomCode)
+      localStorage.removeItem('doodl_host_room')
       
       this.router.navigate('/room')
     })
