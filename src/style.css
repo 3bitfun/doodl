@@ -4,9 +4,9 @@
 @tailwind utilities;
 
 :root {
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'DM Sans', 'Segoe UI', sans-serif;
   color: #f9fafb;
-  background: linear-gradient(135deg, #0f0c29 0%, #1a1a3e 50%, #0f0c29 100%);
+  background: #101518;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -22,7 +22,10 @@ body,
 body {
   min-width: 320px;
   margin: 0;
-  background: linear-gradient(135deg, #0f0c29 0%, #1a1a3e 50%, #0f0c29 100%);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(30, 125, 121, 0.16), transparent 32rem),
+    radial-gradient(circle at 90% 100%, rgba(224, 125, 81, 0.1), transparent 28rem),
+    #101518;
   background-attachment: fixed;
 }
 
@@ -43,7 +46,173 @@ button {
   display: block;
   max-width: 100%;
   height: auto;
+  border-radius: 6px;
   touch-action: none;
+}
+
+.canvas-frame {
+  position: relative;
+  overflow: hidden;
+  line-height: 0;
+}
+
+#remoteCursors {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.remote-cursor {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-3px, -3px);
+  transition: left 80ms linear, top 80ms linear;
+}
+
+.remote-cursor-dot {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #e78b67;
+  box-shadow: 0 1px 5px rgba(16, 21, 24, 0.45);
+}
+
+.remote-cursor-label {
+  position: absolute;
+  top: 14px;
+  left: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #182225;
+  color: #f4f8f8;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 7px rgba(16, 21, 24, 0.22);
+}
+
+.feedback-toast {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  bottom: 24px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border: 1px solid rgba(102, 224, 211, 0.35);
+  border-radius: 8px;
+  background: rgba(24, 34, 37, 0.94);
+  color: #e8f5f3;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 10px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.feedback-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.feedback-toast.success {
+  border-color: rgba(102, 224, 211, 0.58);
+}
+
+.feedback-toast.accent {
+  border-color: rgba(240, 162, 122, 0.52);
+}
+
+.turn-status {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #71808a;
+  border-radius: 5px;
+  background: rgba(113, 128, 138, 0.12);
+  color: #aab8bd;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.turn-status.your-turn {
+  border-left-color: #f0a27a;
+  background: rgba(240, 162, 122, 0.13);
+  color: #ffd2be;
+}
+
+input:focus,
+button:focus-visible {
+  outline: 2px solid #4fd1c5;
+  outline-offset: 2px;
+}
+
+input::placeholder {
+  color: #71808a;
+}
+
+button {
+  letter-spacing: 0.01em;
+}
+
+/* Keep the game readable when the side panels have to stack. */
+@media (max-width: 900px) {
+  #app .w-64,
+  #app .w-80 {
+    width: 14rem;
+  }
+}
+
+@media (max-width: 680px) {
+  #app .flex-1.flex.overflow-hidden {
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  #app .w-64,
+  #app .w-80 {
+    width: 100%;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  #app .w-64 {
+    order: 2;
+  }
+
+  #app .w-80 {
+    order: 3;
+    min-height: 16rem;
+  }
+
+  #app .flex-1.bg-gray-900\/50 {
+    order: 1;
+    min-height: 28rem;
+  }
+
+  #app header .flex.items-center.gap-4 {
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  #app header {
+    padding: 0.75rem 1rem;
+  }
+
+  #app .canvas-frame + div {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .feedback-toast {
+    bottom: 14px;
+  }
 }
 
 /* Custom scrollbar */
@@ -98,14 +267,16 @@ button {
 
 /* Glass effect */
 .glass {
-  background: rgba(31, 41, 55, 0.7);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(24, 34, 37, 0.86);
+  border-color: rgba(126, 155, 158, 0.18) !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 /* Gradient text */
 .gradient-text {
-  background: linear-gradient(135deg, #a855f7, #ec4899);
+  background: linear-gradient(135deg, #66e0d3, #f0a27a);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

@@ -9,6 +9,12 @@ export default class GameRoom {
     this.strokes = []
     this.gameTimer = null
     this.lobbyChannel = null
+    this.remoteCursors = new Map()
+    this.lastCursorBroadcast = 0
+    this.fillMode = false
+    this.roundEnding = false
+    this.gameStarted = false
+    this.guessedPlayers = new Set()
     this.roundStartTime = 0
     this.drawerId = null
     this.currentWord = null
@@ -80,8 +86,14 @@ export default class GameRoom {
   }
 
   isRoomLeader() {
-    const playerIds = Object.keys(this.state.players).sort()
-    return playerIds[0] === this.getPlayerId()
+    return this.state.isHost
+  }
+
+  getPlayerOrder() {
+    const entries = Object.entries(this.state.players)
+    const host = entries.find(([, player]) => player.isHost)
+    const others = entries.filter(([playerId]) => !host || playerId !== host[0]).sort(([firstId], [secondId]) => firstId.localeCompare(secondId))
+    return host ? [host, ...others].map(([playerId]) => playerId) : others.map(([playerId]) => playerId)
   }
 
   syncPlayersFromPresence() {
@@ -114,6 +126,26 @@ export default class GameRoom {
 
   handleDrawingEvent(data) {
     if (data.senderId === this.getPlayerId()) return
+
+    if (data.type === 'cursor') {
+      this.updateRemoteCursor(data)
+      return
+    }
+
+    if (data.type === 'cursor-leave') {
+      this.removeRemoteCursor(data.senderId)
+      return
+    }
+
+    if (data.type === 'undo') {
+      this.undoStroke()
+      return
+    }
+
+    if (data.type === 'fill') {
+      this.fillAt(data.point, data.color)
+      return
+    }
     
     if (data.type === 'stroke-start') {
       this.strokes.push({ 
@@ -173,28 +205,36 @@ export default class GameRoom {
       this.state.drawingEnabled = true
       this.showWordToDrawer(data.word)
       this.addSystemMessage("🎨 You're drawing! Type hints in chat.")
+      this.showFeedback('You are drawing this round', 'accent')
+      this.updateTurnStatus('Your turn to draw', true)
     } else {
       this.state.isDrawer = false
       this.state.drawingEnabled = false
       this.state.currentWord = ''
       this.hideWordForGuesser()
       this.addSystemMessage("🤔 Guess what they're drawing!")
+      this.showFeedback('Round started. Make your guess', 'accent')
+      const drawerName = this.state.players[data.drawerId]?.username || 'Another player'
+      this.updateTurnStatus(`${drawerName} is drawing`, false)
     }
     this.updatePlayersList()
   }
 
   handleCorrectGuess(data) {
     if (data.senderId === this.getPlayerId()) return
-    this.state.guessedWords.add(data.word.toLowerCase())
-    this.addSystemMessage(`🎯 ${data.guesser} guessed "${data.word}"! (+${data.points} points)`)
+    this.guessedPlayers.add(data.guesserId)
+    this.addSystemMessage(`🎯 ${data.guesser} guessed correctly! (+${data.points} points)`)
     this.state.scores = data.scores
     Object.entries(data.scores).forEach(([playerId, score]) => {
       if (this.state.players[playerId]) this.state.players[playerId].score = score
     })
     this.updatePlayersList()
+    this.showFeedback(`${data.guesser} guessed correctly`, 'success')
   }
 
   handleRoundEnd(data) {
+    if (data.round <= this.state.round) return
+    this.clearCanvas()
     this.state.scores = data.scores
     this.state.round = data.round
     Object.entries(data.scores).forEach(([playerId, score]) => {
@@ -213,9 +253,17 @@ export default class GameRoom {
   render() {
     this.app.innerHTML = `<div class="min-h-screen flex flex-col"><header class="glass border-b border-gray-700/50 px-6 py-3 backdrop-blur-sm"><div class="flex items-center justify-between"><div class="flex items-center gap-4"><h1 class="text-2xl font-bold gradient-text">doodl</h1><span class="text-gray-500">|</span><span class="text-gray-300">Room: <span class="font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded-lg">${this.state.roomCode}</span></span><span class="text-gray-500">|</span><span class="text-gray-300">You: <span class="font-semibold text-pink-400">${this.state.username}</span></span></div><div class="flex items-center gap-2"><button id="startGame" class="hidden px-4 py-2 bg-green-600/80 hover:bg-green-700 rounded-xl text-sm transition-all duration-200">▶ Start Game</button><button id="leaveRoom" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200 hover:shadow-lg hover:shadow-red-500/25">🚪 Leave</button></div></div></header><div class="flex-1 flex overflow-hidden"><div class="w-64 glass border-r border-gray-700/50 p-4 flex flex-col backdrop-blur-sm"><div class="mb-4"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">👥 Players</h3><div id="playersList" class="space-y-2"></div></div><div class="mt-auto"><div id="wordDisplay" class="glass rounded-xl p-4 text-center border border-gray-700/50"><p class="text-gray-500 text-sm">Waiting for round...</p></div><div id="timerDisplay" class="mt-3 text-center text-4xl font-bold gradient-text animate-pulse"></div></div></div><div class="flex-1 bg-gray-900/50 flex flex-col items-center justify-center p-4"><div class="glass rounded-2xl shadow-2xl overflow-hidden border border-gray-700/50"><canvas id="gameCanvas" width="800" height="600" class="bg-white cursor-crosshair"></canvas></div><div class="mt-4 flex items-center gap-4 glass rounded-xl px-4 py-3 border border-gray-700/50"><div class="flex items-center gap-2"><label class="text-sm text-gray-400">🎨</label><input type="color" id="colorPicker" value="#000000" class="w-10 h-10 rounded-xl border-0 cursor-pointer"/></div><div class="flex items-center gap-2"><label class="text-sm text-gray-400">Size:</label><input type="range" id="brushSize" min="1" max="50" value="5" class="w-32 accent-purple-500"/><span id="brushSizeValue" class="text-sm text-gray-300 w-8 text-center">5</span></div><button id="eraserBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm transition-all duration-200">🧹 Eraser</button><button id="clearBtn" class="px-4 py-2 bg-red-600/80 hover:bg-red-700 rounded-xl text-sm transition-all duration-200">🗑️ Clear</button></div></div><div class="w-80 glass border-l border-gray-700/50 flex flex-col backdrop-blur-sm"><div class="p-4 border-b border-gray-700/50"><h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">💬 Chat</h3></div><div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-2"></div><div class="p-4 border-t border-gray-700/50"><form id="chatForm" class="flex gap-2"><input type="text" id="chatInput" placeholder="Type your guess..." class="flex-1 px-3 py-2 bg-gray-800/80 border border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-white text-sm placeholder-gray-500" maxlength="50"/><button type="submit" class="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-xl transition-all duration-200">➤</button></form></div></div></div></div>`
     this.setupCanvas()
+    this.addDrawControls()
     this.setupEventListeners()
     this.updatePlayersList()
     this.updateStartButton()
+    this.updateTurnStatus('Waiting for the host to start', false)
+  }
+
+  addDrawControls() {
+    const toolbar = document.getElementById('eraserBtn')?.parentElement
+    if (!toolbar) return
+    toolbar.insertAdjacentHTML('beforeend', '<button id="undoBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm transition-all duration-200" title="Undo last stroke">↶ Undo</button><button id="fillBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm transition-all duration-200" title="Fill an area">▧ Fill</button>')
   }
 
   setupCanvas() {
@@ -225,12 +273,17 @@ export default class GameRoom {
     this.ctx.lineJoin = "round"
     this.strokes = []
     this.clearCanvas()
+    const canvasFrame = this.canvas.parentElement
+    canvasFrame.classList.add('canvas-frame')
+    const cursorLayer = document.createElement('div')
+    cursorLayer.id = 'remoteCursors'
+    canvasFrame.appendChild(cursorLayer)
     
     // Mouse events
     this.canvas.addEventListener("mousedown", (e) => this.startDrawing(e))
-    this.canvas.addEventListener("mousemove", (e) => this.draw(e))
+    this.canvas.addEventListener("mousemove", (e) => { this.updateLocalCursor(e); this.draw(e) })
     this.canvas.addEventListener("mouseup", () => this.stopDrawing())
-    this.canvas.addEventListener("mouseout", () => this.stopDrawing())
+    this.canvas.addEventListener("mouseout", () => { this.stopDrawing(); this.broadcast('drawing', { type: 'cursor-leave' }) })
     
     // Touch events for mobile
     this.canvas.addEventListener("touchstart", (e) => { e.preventDefault(); this.handleTouchStart(e) })
@@ -261,24 +314,93 @@ export default class GameRoom {
     document.getElementById("colorPicker").addEventListener("input", (e) => { this.state.brushColor = e.target.value; this.state.isEraser = false; document.getElementById("eraserBtn").classList.remove("bg-purple-600", "ring-2", "ring-purple-500") })
     const bs = document.getElementById("brushSize"), bsv = document.getElementById("brushSizeValue")
     bs.addEventListener("input", (e) => { this.state.brushSize = parseInt(e.target.value); bsv.textContent = e.target.value })
-    document.getElementById("eraserBtn").addEventListener("click", () => { this.state.isEraser = !this.state.isEraser; document.getElementById("eraserBtn").classList.toggle("bg-purple-600", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-2", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-purple-500", this.state.isEraser) })
-    document.getElementById("clearBtn").addEventListener("click", () => { if (this.state.isDrawer) { this.clearCanvas(); this.broadcast("clear-canvas", {}) } })
+    document.getElementById("eraserBtn").addEventListener("click", () => { this.state.isEraser = !this.state.isEraser; document.getElementById("eraserBtn").classList.toggle("bg-purple-600", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-2", this.state.isEraser); document.getElementById("eraserBtn").classList.toggle("ring-purple-500", this.state.isEraser); this.showFeedback(this.state.isEraser ? 'Eraser enabled' : 'Brush enabled', 'accent') })
+    document.getElementById("clearBtn").addEventListener("click", () => { if (this.state.isDrawer) { this.clearCanvas(); this.broadcast("clear-canvas", {}); this.showFeedback('Canvas cleared', 'accent') } })
+    document.getElementById("undoBtn").addEventListener("click", () => { if (this.state.isDrawer) { this.undoStroke(); this.broadcast("drawing", { type: "undo" }); this.showFeedback('Last stroke undone', 'accent') } })
+    document.getElementById("fillBtn").addEventListener("click", () => { if (this.state.isDrawer) { this.fillMode = !this.fillMode; document.getElementById("fillBtn").classList.toggle("bg-purple-600", this.fillMode); this.showFeedback(this.fillMode ? 'Fill tool enabled' : 'Brush tool enabled', 'accent') } })
     document.getElementById("chatForm").addEventListener("submit", (e) => { e.preventDefault(); const input = document.getElementById("chatInput"); const msg = input.value.trim(); if (msg) { this.sendChat(msg); input.value = "" } })
-    document.getElementById("startGame").addEventListener("click", () => this.startRound())
+    document.getElementById("startGame").addEventListener("click", () => { if (!this.gameStarted) this.startRound() })
     document.getElementById("leaveRoom").addEventListener("click", () => this.leaveRoom())
   }
 
   updateStartButton() {
     const button = document.getElementById("startGame")
     if (!button) return
-    button.classList.toggle("hidden", !this.state.isHost)
+    button.classList.toggle("hidden", !this.state.isHost || this.gameStarted)
+  }
+
+  updateTurnStatus(message, isLocalTurn) {
+    let status = document.getElementById('turnStatus')
+    if (!status) {
+      const wordPanel = document.getElementById('wordDisplay')
+      if (!wordPanel) return
+      status = document.createElement('div')
+      status.id = 'turnStatus'
+      wordPanel.parentElement.insertBefore(status, wordPanel)
+    }
+    status.textContent = message
+    status.className = `turn-status ${isLocalTurn ? 'your-turn' : ''}`
   }
 
   getMousePos(e) { const r = this.canvas.getBoundingClientRect(); const scaleX = this.canvas.width / r.width; const scaleY = this.canvas.height / r.height; return { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY } }
 
+  updateLocalCursor(e) {
+    const now = Date.now()
+    if (now - this.lastCursorBroadcast < 50) return
+    const position = this.getMousePos(e)
+    this.lastCursorBroadcast = now
+    this.broadcast('drawing', { type: 'cursor', point: position, username: this.state.username })
+  }
+
+  updateRemoteCursor(data) {
+    const cursorLayer = document.getElementById('remoteCursors')
+    if (!cursorLayer) return
+    let cursor = this.remoteCursors.get(data.senderId)
+    if (!cursor) {
+      cursor = document.createElement('div')
+      cursor.className = 'remote-cursor'
+      cursor.innerHTML = '<span class="remote-cursor-dot"></span><span class="remote-cursor-label"></span>'
+      cursorLayer.appendChild(cursor)
+      this.remoteCursors.set(data.senderId, cursor)
+    }
+    cursor.style.left = `${(data.point.x / this.canvas.width) * 100}%`
+    cursor.style.top = `${(data.point.y / this.canvas.height) * 100}%`
+    cursor.querySelector('.remote-cursor-label').textContent = data.username || 'Player'
+  }
+
+  removeRemoteCursor(playerId) {
+    const cursor = this.remoteCursors.get(playerId)
+    if (cursor) cursor.remove()
+    this.remoteCursors.delete(playerId)
+  }
+
+  showFeedback(message, tone = 'accent') {
+    let toast = document.getElementById('feedbackToast')
+    if (!toast) {
+      toast = document.createElement('div')
+      toast.id = 'feedbackToast'
+      document.body.appendChild(toast)
+    }
+    toast.className = `feedback-toast ${tone}`
+    toast.textContent = message
+    clearTimeout(this.feedbackTimer)
+    requestAnimationFrame(() => toast.classList.add('visible'))
+    this.feedbackTimer = setTimeout(() => toast.classList.remove('visible'), 2200)
+  }
+
   startDrawing(e) {
-    if (!this.state.drawingEnabled) return
+    if (!this.state.drawingEnabled) {
+      this.showFeedback('Wait for your turn to draw', 'accent')
+      return
+    }
+    if (this.fillMode) {
+      const point = this.getMousePos(e)
+      this.fillAt(point, this.state.isEraser ? '#ffffff' : this.state.brushColor)
+      this.broadcast("drawing", { type: "fill", point, color: this.state.isEraser ? '#ffffff' : this.state.brushColor })
+      return
+    }
     this.isDrawing = true
+    this.showFeedback('Drawing...', 'accent')
     const pos = this.getMousePos(e)
     const stroke = { points: [pos], color: this.state.isEraser ? "#ffffff" : this.state.brushColor, size: this.state.brushSize, isEraser: this.state.isEraser }
     this.strokes.push(stroke)
@@ -295,6 +417,43 @@ export default class GameRoom {
 
   stopDrawing() { if (this.isDrawing) { this.isDrawing = false; this.broadcast("drawing", { type: "stroke-end" }) } }
 
+  undoStroke() {
+    if (this.strokes.length === 0) return
+    this.strokes.pop()
+    this.ctx.fillStyle = '#ffffff'
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
+    this.strokes.forEach((stroke) => this.drawStroke(stroke))
+  }
+
+  fillAt(point, color) {
+    const x = Math.floor(point.x)
+    const y = Math.floor(point.y)
+    if (x < 0 || y < 0 || x >= this.canvas.width || y >= this.canvas.height) return
+    const image = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height)
+    const targetIndex = (y * this.canvas.width + x) * 4
+    const target = image.data.slice(targetIndex, targetIndex + 4)
+    const replacement = this.hexToRgb(color)
+    if (!replacement || target[0] === replacement[0] && target[1] === replacement[1] && target[2] === replacement[2]) return
+    const stack = [[x, y]]
+    while (stack.length) {
+      const [pixelX, pixelY] = stack.pop()
+      if (pixelX < 0 || pixelY < 0 || pixelX >= this.canvas.width || pixelY >= this.canvas.height) continue
+      const index = (pixelY * this.canvas.width + pixelX) * 4
+      if (image.data[index] !== target[0] || image.data[index + 1] !== target[1] || image.data[index + 2] !== target[2] || image.data[index + 3] !== target[3]) continue
+      image.data[index] = replacement[0]
+      image.data[index + 1] = replacement[1]
+      image.data[index + 2] = replacement[2]
+      image.data[index + 3] = 255
+      stack.push([pixelX + 1, pixelY], [pixelX - 1, pixelY], [pixelX, pixelY + 1], [pixelX, pixelY - 1])
+    }
+    this.ctx.putImageData(image, 0, 0)
+  }
+
+  hexToRgb(hex) {
+    const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+    return match ? [parseInt(match[1], 16), parseInt(match[2], 16), parseInt(match[3], 16)] : null
+  }
+
   drawStroke(stroke) {
     if (stroke.points.length < 2) return
     this.ctx.beginPath(); this.ctx.strokeStyle = stroke.color; this.ctx.lineWidth = stroke.size
@@ -306,29 +465,43 @@ export default class GameRoom {
   clearCanvas() { this.strokes = []; this.ctx.fillStyle = "#ffffff"; this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height) }
 
   sendChat(message) {
-    const isCorrect = !this.state.isDrawer && this.currentWord && message.toLowerCase() === this.currentWord.toLowerCase() && !this.state.guessedWords.has(message.toLowerCase())
+    const playerId = this.getPlayerId()
+    const isCorrect = !this.state.isDrawer && this.currentWord && message.toLowerCase() === this.currentWord.toLowerCase() && !this.guessedPlayers.has(playerId)
     if (isCorrect) {
       const pts = Math.max(10, Math.floor(30 - (Date.now() - this.roundStartTime) / 1000))
-      this.state.scores[this.getPlayerId()] = (this.state.scores[this.getPlayerId()] || 0) + pts
-      if (this.state.players[this.getPlayerId()]) this.state.players[this.getPlayerId()].score = this.state.scores[this.getPlayerId()]
-      this.broadcast("chat", { message, username: this.state.username })
-      const guessResult = { senderId: this.getPlayerId(), word: this.currentWord, guesser: this.state.username, points: pts, scores: this.state.scores }
-      this.state.guessedWords.add(this.currentWord.toLowerCase())
-      this.addSystemMessage(`🎯 ${this.state.username} guessed \"${this.currentWord}\"! (+${pts} points)`)
+      this.state.scores[playerId] = (this.state.scores[playerId] || 0) + pts
+      if (this.state.players[playerId]) this.state.players[playerId].score = this.state.scores[playerId]
+      const guessResult = { senderId: playerId, guesserId: playerId, word: this.currentWord, guesser: this.state.username, points: pts, scores: this.state.scores }
+      this.guessedPlayers.add(playerId)
+      this.addSystemMessage(`🎯 You guessed correctly! (+${pts} points)`)
       this.updatePlayersList()
+      this.broadcast("chat", { message: "🎯 Correct guess!", username: this.state.username })
       this.broadcast("correct-guess", guessResult)
       this.checkAllGuessed()
-    } else { this.broadcast("chat", { message, username: this.state.username }) }
-    this.state.chatMessages.push({ username: this.state.username, message, isSystem: false }); this.updateChat()
+    } else {
+      this.broadcast("chat", { message, username: this.state.username })
+      this.state.chatMessages.push({ username: this.state.username, message, isSystem: false })
+      this.updateChat()
+    }
   }
 
-  checkAllGuessed() { if (this.state.guessedWords.size >= Object.keys(this.state.players).length - 1) { setTimeout(() => this.endRound(), 2000) } }
+  checkAllGuessed() {
+    const eligibleGuessers = Object.keys(this.state.players).filter((playerId) => playerId !== this.drawerId)
+    if (eligibleGuessers.length > 0 && eligibleGuessers.every((playerId) => this.guessedPlayers.has(playerId))) {
+      setTimeout(() => this.endRound(), 2000)
+    }
+  }
 
   startRound() {
+    if (!this.state.isHost || this.roundEnding) return
     this.state.guessedWords.clear(); this.clearCanvas(); this.broadcast("clear-canvas", {})
-    const ids = Object.keys(this.state.players)
+    const ids = this.getPlayerOrder()
     if (ids.length === 0) return
-    const drawer = ids[Math.floor(Math.random() * ids.length)]
+    this.gameStarted = true
+    this.updateStartButton()
+    this.roundEnding = false
+    this.guessedPlayers.clear()
+    const drawer = ids[(this.state.round - 1) % ids.length]
     const word = this.state.wordList[Math.floor(Math.random() * this.state.wordList.length)]
     const roundData = { drawerId: drawer, word }
     this.handleNewWord(roundData)
@@ -341,6 +514,10 @@ export default class GameRoom {
   }
 
   endRound() {
+    if (!this.state.isHost || this.roundEnding) return
+    this.roundEnding = true
+    this.clearCanvas()
+    this.broadcast("clear-canvas", {})
     if (this.gameTimer) clearInterval(this.gameTimer)
     // Award points to drawer based on how many people guessed
     if (this.state.guessedWords.size > 0) { 
@@ -380,6 +557,7 @@ export default class GameRoom {
   addSystemMessage(msg) { this.state.chatMessages.push({ username: "System", message: msg, isSystem: true }); this.updateChat() }
 
   leaveRoom() {
+    this.broadcast("drawing", { type: "cursor-leave" })
     if (this.state.channel) { this.state.channel.untrack(); this.state.channel.unsubscribe() }
     if (this.lobbyChannel) this.lobbyChannel.unsubscribe()
     if (this.gameTimer) clearInterval(this.gameTimer)
