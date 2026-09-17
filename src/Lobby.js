@@ -1,19 +1,20 @@
+import PartySocket from 'partysocket'
+
 export default class Lobby {
   constructor(app, state, router) {
     this.app = app
     this.state = state
     this.router = router
-    this.lobbyChannel = null
+    this.directorySocket = null
     this.openRooms = {}
     this.render()
     this.attachEventListeners()
-    this.initLobbyChannel()
+    this.initDirectory()
   }
 
   render() {
     this.app.innerHTML = `
       <div class="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-        <!-- Background decoration -->
         <div class="absolute inset-0 overflow-hidden pointer-events-none">
           <div class="absolute -top-40 -right-40 w-80 h-80 bg-purple-600/20 rounded-full blur-3xl animate-pulse"></div>
           <div class="absolute -bottom-40 -left-40 w-80 h-80 bg-pink-600/20 rounded-full blur-3xl animate-pulse" style="animation-delay: 1s;"></div>
@@ -81,42 +82,44 @@ export default class Lobby {
                 <p class="text-sm text-gray-500 text-center py-3">Looking for open rooms...</p>
               </div>
             </div>
-            
+
             <div id="error" class="hidden bg-red-500/10 border border-red-500/50 text-red-400 text-center text-sm mt-4 p-3 rounded-lg"></div>
           </div>
           
           <div class="mt-8 text-center text-xs text-gray-500">
-            <p>🚀 Powered by Supabase Realtime</p>
+            <p>🚀 Powered by PartyKit</p>
           </div>
         </div>
       </div>
     `
   }
 
-  initLobbyChannel() {
-    if (!this.state.supabase) {
-      this.updateOpenRooms()
-      return
-    }
+  initDirectory() {
+    const host = import.meta.env.DEV
+      ? `${window.location.hostname}:1999`
+      : 'doodl.3bitfun.partykit.dev'
 
-    this.lobbyChannel = this.state.supabase
-      .channel('doodl-lobby')
-      .on('presence', { event: 'sync' }, () => {
-        this.openRooms = this.getRoomsFromPresence()
-        this.updateOpenRooms()
+    try {
+      this.directorySocket = new PartySocket({
+        host,
+        room: '__directory__',
       })
-      .subscribe()
-  }
 
-  getRoomsFromPresence() {
-    const presence = this.lobbyChannel.presenceState()
-    return Object.fromEntries(Object.entries(presence).map(([roomCode, entries]) => {
-      const room = entries.find((entry) => entry.isHost) || entries[0] || {}
-      return [roomCode, {
-        host: room.host || 'Anonymous',
-        players: entries.length
-      }]
-    }))
+      this.directorySocket.addEventListener('message', (event) => {
+        let msg
+        try { msg = JSON.parse(event.data) } catch { return }
+        if (msg.type === 'rooms') {
+          this.openRooms = Object.fromEntries(msg.rooms.map(r => [r.code, r]))
+          this.updateOpenRooms()
+        }
+      })
+
+      this.directorySocket.addEventListener('error', (err) => {
+        console.error('Directory socket error:', err)
+      })
+    } catch (e) {
+      console.error('Failed to init directory socket:', e)
+    }
   }
 
   updateOpenRooms() {
@@ -126,10 +129,14 @@ export default class Lobby {
 
     const rooms = Object.entries(this.openRooms)
     countEl.textContent = `${rooms.length} available`
+
     roomsEl.innerHTML = rooms.length
-      ? rooms.map(([roomCode, room]) => `
-          <button data-room-code="${roomCode}" class="w-full flex items-center justify-between gap-3 px-3 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg text-left hover:border-purple-500/60 hover:bg-purple-500/10 transition-all">
-            <span class="min-w-0"><span class="block font-mono text-purple-400 tracking-wider">${roomCode}</span><span class="block text-xs text-gray-500 truncate">${room.host}'s room</span></span>
+      ? rooms.map(([code, room]) => `
+          <button data-room-code="${code}" class="w-full flex items-center justify-between gap-3 px-3 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg text-left hover:border-purple-500/60 hover:bg-purple-500/10 transition-all">
+            <span class="min-w-0">
+              <span class="block font-mono text-purple-400 tracking-wider">${code}</span>
+              <span class="block text-xs text-gray-500 truncate">${room.host || 'Anonymous'}'s room</span>
+            </span>
             <span class="shrink-0 text-xs text-gray-400">${room.players} ${room.players === 1 ? 'player' : 'players'}</span>
           </button>`).join('')
       : '<p class="text-sm text-gray-500 text-center py-3">No open rooms yet</p>'
@@ -160,7 +167,7 @@ export default class Lobby {
       return Math.random().toString(36).substring(2, 8).toUpperCase()
     }
 
-    createRoomBtn.addEventListener('click', async () => {
+    createRoomBtn.addEventListener('click', () => {
       const username = usernameInput.value.trim()
       if (!username) {
         showError('⚠️ Please enter a username')
@@ -172,25 +179,24 @@ export default class Lobby {
       this.state.username = username
       this.state.roomCode = roomCode
       this.state.isHost = true
-      
-      // Store in localStorage for persistence
+
       localStorage.setItem('doodl_username', username)
       localStorage.setItem('doodl_room_code', roomCode)
       localStorage.setItem('doodl_host_room', roomCode)
-      
+
       this.router.navigate('/room')
     })
 
-    joinRoomBtn.addEventListener('click', async () => {
+    joinRoomBtn.addEventListener('click', () => {
       const username = usernameInput.value.trim()
       const roomCode = roomCodeInput.value.trim().toUpperCase()
-      
+
       if (!username) {
         showError('⚠️ Please enter a username')
         usernameInput.focus()
         return
       }
-      
+
       if (!roomCode || roomCode.length !== 6) {
         showError('⚠️ Please enter a valid 6-character room code')
         roomCodeInput.focus()
@@ -200,40 +206,33 @@ export default class Lobby {
       this.state.username = username
       this.state.roomCode = roomCode
       this.state.isHost = false
-      
+
       localStorage.setItem('doodl_username', username)
       localStorage.setItem('doodl_room_code', roomCode)
       localStorage.removeItem('doodl_host_room')
-      
+
       this.router.navigate('/room')
     })
 
-    // Load saved username
     const savedUsername = localStorage.getItem('doodl_username')
-    if (savedUsername) {
-      usernameInput.value = savedUsername
-    }
+    if (savedUsername) usernameInput.value = savedUsername
 
-    // Allow Enter key to submit
     usernameInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        createRoomBtn.click()
-      }
+      if (e.key === 'Enter') createRoomBtn.click()
     })
-    
+
     roomCodeInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        joinRoomBtn.click()
-      }
+      if (e.key === 'Enter') joinRoomBtn.click()
     })
-    
-    // Auto-uppercase room code input
+
     roomCodeInput.addEventListener('input', (e) => {
       e.target.value = e.target.value.toUpperCase()
     })
   }
 
   destroy() {
-    if (this.lobbyChannel) this.lobbyChannel.unsubscribe()
+    if (this.directorySocket) {
+      try { this.directorySocket.close() } catch (e) {}
+    }
   }
 }
