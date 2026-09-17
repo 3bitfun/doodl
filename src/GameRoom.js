@@ -21,17 +21,15 @@ export default class GameRoom {
     this.drawerId = null
     this.currentWord = null
     this.hostId = null
+    this.myServerId = null
 
     this.render()
     this.connectSocket()
   }
 
   connectSocket() {
-    const host = import.meta.env.DEV
-      ? `${window.location.hostname}:1999`
-      : 'doodl.3bitfun.partykit.dev'
+    const host = 'doodl.tchazq1n.workers.dev'
 
-    // Main game socket
     this.socket = new PartySocket({
       host,
       room: this.state.roomCode,
@@ -59,7 +57,6 @@ export default class GameRoom {
       console.error('Socket error:', err)
     })
 
-    // Directory beacon — announces this room so others can find it
     this.directoryBeacon = new PartySocket({
       host,
       room: '__directory__',
@@ -74,6 +71,7 @@ export default class GameRoom {
       }))
     })
   }
+
   updateBeacon() {
     if (!this.directoryBeacon || this.directoryBeacon.readyState !== 1) return
     try {
@@ -86,6 +84,7 @@ export default class GameRoom {
       console.error('Beacon update failed:', e)
     }
   }
+
   handleServerMessage(msg) {
     switch (msg.type) {
       case 'state':
@@ -100,8 +99,16 @@ export default class GameRoom {
         this.updateTimer(msg.timeLeft)
         break
 
-      case 'stroke':
-        this.receiveStroke(msg.stroke)
+      case 'stroke-start':
+        this.receiveStrokeStart(msg)
+        break
+
+      case 'stroke-move':
+        this.receiveStrokeMove(msg)
+        break
+
+      case 'stroke-end':
+        this.receiveStrokeEnd()
         break
 
       case 'cursor':
@@ -113,7 +120,7 @@ export default class GameRoom {
         break
 
       case 'fill':
-        this.fillAt(msg.point, msg.color)
+        this.receiveFill(msg)
         break
 
       case 'undo':
@@ -122,6 +129,10 @@ export default class GameRoom {
 
       case 'clear':
         this.clearCanvas()
+        break
+
+      case 'you':
+        this.myServerId = msg.playerId
         break
 
       case 'chat':
@@ -164,9 +175,13 @@ export default class GameRoom {
     this.state.isHost = serverState.hostId === this.getPlayerId()
     this.updateBeacon()
 
-    if (!this.state.isDrawer && serverState.strokes.length !== this.strokes.length) {
-      this.strokes = serverState.strokes
-      this.redrawCanvas()
+    // Only sync strokes from server for non-drawers, and only if lengths differ
+    // (the drawer is authoritative for its own canvas)
+    if (!this.state.isDrawer && Array.isArray(serverState.strokes)) {
+      if (serverState.strokes.length !== this.strokes.length) {
+        this.strokes = serverState.strokes.map(s => ({ ...s, points: [...s.points] }))
+        this.redrawCanvas()
+      }
     }
 
     this.updatePlayersList()
@@ -249,13 +264,15 @@ export default class GameRoom {
     `
   }
 
-  // ─── Drawing ────────────────────────────────────────────────
+  // ─── Drawing — drawer side ──────────────────────────────────
 
   sendStrokeStart(point, color, size) {
     this.currentStroke = { points: [point], color, size }
     this.socket.send(JSON.stringify({
-      type: 'stroke',
-      stroke: { points: [point], color, size },
+      type: 'stroke-start',
+      point,
+      color,
+      size,
     }))
   }
 
@@ -263,22 +280,50 @@ export default class GameRoom {
     if (!this.currentStroke) return
     this.currentStroke.points.push(point)
     this.socket.send(JSON.stringify({
-      type: 'stroke',
-      stroke: {
-        points: this.currentStroke.points,
-        color: this.currentStroke.color,
-        size: this.currentStroke.size,
-      },
+      type: 'stroke-move',
+      point,
     }))
   }
 
-  receiveStroke(stroke) {
-    this.strokes.push(stroke)
-    if (stroke.size === -1) {
-      this.fillAt(stroke.points[0], stroke.color)
-    } else {
-      this.drawStroke(stroke)
+  sendStrokeEnd() {
+    if (this.currentStroke) {
+      this.strokes.push(this.currentStroke)
+      this.currentStroke = null
     }
+    this.socket.send(JSON.stringify({ type: 'stroke-end' }))
+  }
+
+  // ─── Drawing — receiver side ────────────────────────────────
+
+  receiveStrokeStart(msg) {
+    this.currentStroke = {
+      points: [msg.point],
+      color: msg.color,
+      size: msg.size,
+    }
+    this.redrawCanvas()
+  }
+
+  receiveStrokeMove(msg) {
+    if (!this.currentStroke) return
+    this.currentStroke.points.push(msg.point)
+    this.redrawCanvas()
+  }
+
+  receiveStrokeEnd() {
+    if (this.currentStroke) {
+      this.strokes.push(this.currentStroke)
+      this.currentStroke = null
+    }
+  }
+
+  receiveFill(msg) {
+    this.strokes.push({
+      points: [msg.point],
+      color: msg.color,
+      size: -1,
+    })
+    this.fillAt(msg.point, msg.color)
   }
 
   // ─── Render ─────────────────────────────────────────────────
@@ -362,6 +407,7 @@ export default class GameRoom {
     this.ctx.lineCap = 'round'
     this.ctx.lineJoin = 'round'
     this.strokes = []
+    this.currentStroke = null
     this.clearCanvas()
 
     const cursorLayer = document.createElement('div')
@@ -479,6 +525,7 @@ export default class GameRoom {
     this.isDrawing = true
     const color = this.state.isEraser ? '#ffffff' : this.state.brushColor
     this.sendStrokeStart(pos, color, this.state.brushSize)
+    this.redrawCanvas()
   }
 
   draw(e) {
@@ -497,15 +544,14 @@ export default class GameRoom {
     if (!this.isDrawing) return
     const pos = this.getMousePos(e)
     this.sendStrokeMove(pos)
-    if (this.currentStroke) {
-      this.redrawCanvas()
-    }
+    this.redrawCanvas()
   }
 
   stopDrawing() {
     if (this.isDrawing) {
       this.isDrawing = false
-      this.currentStroke = null
+      this.sendStrokeEnd()
+      this.redrawCanvas()
     }
   }
 
@@ -558,6 +604,7 @@ export default class GameRoom {
   }
 
   undoStroke() {
+    if (this.strokes.length === 0) return
     this.strokes.pop()
     this.redrawCanvas()
   }
@@ -733,7 +780,7 @@ export default class GameRoom {
   }
 
   getPlayerId() {
-    return this.socket?.id || this.state.currentPlayer || ''
+    return this.myServerId || ''
   }
 
   leaveRoom() {

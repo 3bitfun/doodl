@@ -95,9 +95,7 @@ export default class Lobby {
   }
 
   initDirectory() {
-    const host = import.meta.env.DEV
-      ? `${window.location.hostname}:1999`
-      : 'doodl.3bitfun.partykit.dev'
+    const host = 'doodl.tchazq1n.workers.dev'
 
     try {
       this.directorySocket = new PartySocket({
